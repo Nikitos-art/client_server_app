@@ -2,6 +2,8 @@ import socket
 import sys
 import argparse
 import logging
+import threading
+
 import select
 import log.log_configs.server_log_config
 from common.variables import *
@@ -9,6 +11,7 @@ from common.utils import *
 from decorators import log
 from descriptors import ServerSocketDescriptor
 from metaclasses import ServerVerifier
+from server_DB import ServerStorage
 
 LOGGER = logging.getLogger('server')
 
@@ -24,16 +27,18 @@ def arg_parser():
     return listen_address, listen_port
 
 
-class Server(metaclass=ServerVerifier):
+class Server(threading.Thread, metaclass=ServerVerifier):
     listen_port = ServerSocketDescriptor()
 
-    def __init__(self, listen_address, listen_port):
+    def __init__(self, listen_address, listen_port, database):
         self.addr = listen_address
         self.listen_port = listen_port
+        self.database = database
         self.clients = []
         self.messages = []
         # Names and their sockets dict
         self.names = dict()
+        super().__init__()
 
     def init_socket(self):
         LOGGER.info(
@@ -42,6 +47,7 @@ class Server(metaclass=ServerVerifier):
             f'If no address is provided, then any address will be ok.')
         # Initializing sockets
         transport = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        transport.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  ### setting  options for socket
         transport.bind((self.addr, self.listen_port))
         transport.settimeout(0.5)
 
@@ -121,6 +127,8 @@ class Server(metaclass=ServerVerifier):
             # otherwise send a reply and closing connection.
             if message[USER][ACCOUNT_NAME] not in self.names.keys():
                 self.names[message[USER][ACCOUNT_NAME]] = client
+                client_ip, client_port = client.getpeername()
+                self.database.user_login(message[USER][ACCOUNT_NAME], client_ip, client_port)
                 send_message(client, RESPONSE_200)
             else:
                 response = RESPONSE_400
@@ -142,6 +150,7 @@ class Server(metaclass=ServerVerifier):
         elif ACTION in message \
                 and message[ACTION] == EXIT \
                 and ACCOUNT_NAME in message:
+            self.database.user_logout(message[ACCOUNT_NAME])
             self.clients.remove(self.names[ACCOUNT_NAME])
             self.names[ACCOUNT_NAME].close()
             del self.names[ACCOUNT_NAME]
@@ -154,13 +163,61 @@ class Server(metaclass=ServerVerifier):
             return
 
 
+def print_help():
+    print('Supported commands:')
+    print('users - shows users list')
+    print('connected - shows users who connected')
+    print('loghist - users entrance history')
+    print('exit - close server.')
+    print('help - show inquiry on suppoerted commands')
+
+
 def main():
     # Command line arguments launch, if there are no parameters then use defaults
     listen_address, listen_port = arg_parser()
 
+
+    database = ServerStorage()
     # Creating server class instance.
-    server = Server(listen_address, listen_port)
-    server.main_loop()
+    server = Server(listen_address, listen_port, database)
+    server.daemon = True
+    server.start()
+    # server.main_loop()
+
+    # server main cycle
+    while True:
+        command = input('Enter command: ')
+        if command == 'help':
+            print_help()
+        elif command == 'exit':
+            break
+        elif command == 'users':
+            all_users = sorted(database.users_list())
+            if all_users:
+                for user in all_users:
+                    print(f"User {user[0]}, last entered: {user[1]}")
+            else:
+                print('No data')
+        elif command == 'connected':
+            active_users = sorted(database.active_users_list())
+            if active_users:
+                for user in active_users:
+                    print(f"User {user[0]}, connected: {user[1]}:{user[2]} , "
+                          f"Connected at the following time: {user[3]}")
+            else:
+                print('No data')
+        elif command == 'loghist':
+            name = input("Enter username for viewing history."
+                         "For viewing your own history press Enter: ")
+            history = sorted(database.login_history(name))
+            if history:
+                for user in sorted(database.login_history(name)):
+                    print(f"User: {user[0]}, enterance time: {user[1]}."
+                          f"Enter from {user[2]}:{user[3]}")
+            else:
+                print('No data')
+        else:
+            print("Unknown command")
 
 
 if __name__ == '__main__':
