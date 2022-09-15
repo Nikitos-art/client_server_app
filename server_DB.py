@@ -1,3 +1,5 @@
+from pprint import pprint
+
 from sqlalchemy import create_engine, Table, Column, Integer, String, MetaData, ForeignKey, DateTime
 from sqlalchemy.orm import mapper, sessionmaker
 from common.variables import *
@@ -26,6 +28,21 @@ class ServerStorage:
             self.date_time = date
             self.ip = ip
             self.port = port
+
+    # Users contacts table
+    class UsersContacts:
+        def __init__(self, user, contact):
+            self.id = None
+            self.user = user
+            self.contact = contact
+
+    # Action history table
+    class UsersHistory:
+        def __init__(self, user):
+            self.id = None
+            self.user = user
+            self.sent = 0
+            self.accepted = 0
 
     def __init__(self):
         # Creating our db engine
@@ -63,6 +80,22 @@ class ServerStorage:
                                    Column('ip', String),
                                    Column('port', String)
                                    )
+
+        # Creating users contacts table Создаём
+        contacts = Table('Contacts', self.metadata,
+                         Column('id', Integer, primary_key=True),
+                         Column('user', ForeignKey('Users.id')),
+                         Column('contact', ForeignKey('Users.id'))
+                         )
+
+        # Creating users history table
+        users_history_table = Table('History', self.metadata,
+                                    Column('id', Integer, primary_key=True),
+                                    Column('user', ForeignKey('Users.id')),
+                                    Column('sent', Integer),
+                                    Column('accepted', Integer)
+                                    )
+
         # Creating tables
         self.metadata.create_all(self.database_engine)
 
@@ -70,6 +103,8 @@ class ServerStorage:
         mapper(self.AllUsers, users_table)
         mapper(self.ActiveUsers, active_users_table)
         mapper(self.LoginHistory, user_login_history)
+        mapper(self.UsersContacts, contacts)
+        mapper(self.UsersHistory, users_history_table)
 
         # Creating session
         Session = sessionmaker(bind=self.database_engine)
@@ -96,6 +131,9 @@ class ServerStorage:
             self.session.add(user)
             # Commit is needed here to create a new user whose id will be used for adding active users to table
             self.session.commit()
+            # Adding to users history
+            user_in_history = self.UsersHistory(user.id)
+            self.session.add(user_in_history)
 
         # Now active users table entry can be created on the moment of ther login
         # Creating self.ActiveUsers class instance, through whih we pass on data into table
@@ -120,7 +158,52 @@ class ServerStorage:
         # Commiting changes
         self.session.commit()
 
-    # Function returns a list of known users from the last entry time
+    # This function registers event of sending a message and writes that to db
+    def process_message(self, sender, recipient):
+        # Getting receivers and senders ID
+        sender = self.session.query(self.AllUsers).filter_by(name=sender).first().id
+        recipient = self.session.query(self.AllUsers).filter_by(name=recipient).first().id
+        # Requesting lines from history and increasing counters
+        sender_row = self.session.query(self.UsersHistory).filter_by(user=sender).first()
+        sender_row.sent += 1
+        recipient_row = self.session.query(self.UsersHistory).filter_by(user=recipient).first()
+        recipient_row.accepted += 1
+
+        self.session.commit()
+
+    # This function adds contact for user
+    def add_contact(self, user, contact):
+        # Getting users IDs
+        user = self.session.query(self.AllUsers).filter_by(name=user).first()
+        contact = self.session.query(self.AllUsers).filter_by(name=contact).first()
+
+        # Checking if doubles and if one can be created (user field is UNIQUE)
+        if not contact or self.session.query(self.UsersContacts).filter_by(user=user.id, contact=contact.id).count():
+            return
+
+        # Creating an object and putting it in db
+        contact_row = self.UsersContacts(user.id, contact.id)
+        self.session.add(contact_row)
+        self.session.commit()
+
+    # This function removes contact from db
+    def remove_contact(self, user, contact):
+        # Getting users IDs
+        user = self.session.query(self.AllUsers).filter_by(name=user).first()
+        contact = self.session.query(self.AllUsers).filter_by(name=contact).first()
+
+        # Checking if contact can exist (User field is UNIQUE)
+        if not contact:
+            return
+
+        # Deleting what's needed
+        print(self.session.query(self.UsersContacts).filter(
+            self.UsersContacts.user == user.id,
+            self.UsersContacts.contact == contact.id
+        ).delete())
+        self.session.commit()
+
+    # This function returns a list of known users from the last entry time
     def users_list(self):
         # Lines inquiry from users table
         query = self.session.query(
@@ -156,17 +239,44 @@ class ServerStorage:
         # Returning a list of sets
         return query.all()
 
+    # This function returns users contacts list
+    def get_contacts(self, username):
+        # Requesting a certaid user
+        user = self.session.query(self.AllUsers).filter_by(name=username).one()
+
+        # Requesting its contact list
+        query = self.session.query(self.UsersContacts, self.AllUsers.name). \
+            filter_by(user=user.id). \
+            join(self.AllUsers, self.UsersContacts.contact == self.AllUsers.id)
+
+        # choosing only users names and returning them
+        return [contact[1] for contact in query.all()]
+
+    # This function returns the ammount of messages sent and received
+    def message_history(self):
+        query = self.session.query(
+            self.AllUsers.name,
+            self.AllUsers.last_login,
+            self.UsersHistory.sent,
+            self.UsersHistory.accepted
+        ).join(self.AllUsers)
+        # Returning list of tuples
+        return query.all()
+
 
 # Layout
 if __name__ == '__main__':
     test_db = ServerStorage()
     # Making the "connection" of users
-    test_db.user_login('client_1', '192.168.1.4', 8080)
-    test_db.user_login('client_2', '192.168.1.5', 7777)
+    test_db.user_login('lily', '192.168.1.4', 8080)
+    test_db.user_login('nikita', '192.168.1.5', 8081)
+    # Printing out a list of sets of all users
+    print(' ---- test_db.active_users_list() ----')
+    pprint(test_db.users_list())
 
     # Printing out a list of sets of active users
     print(' ---- test_db.active_users_list() ----')
-    print(test_db.active_users_list())
+    pprint(test_db.active_users_list())
 
     # Making the "disconnecting" of the user
     test_db.user_logout('client_1')
@@ -178,6 +288,9 @@ if __name__ == '__main__':
     print(' ---- test_db.login_history(client_1) ----')
     print(test_db.login_history('client_1'))
 
-    # and prining out list of known users
-    print(' ---- test_db.users_list() ----')
-    print(test_db.users_list())
+    test_db.add_contact('test2', 'test1')
+    test_db.add_contact('test1', 'test3')
+    test_db.add_contact('test1', 'test6')
+    test_db.remove_contact('test1', 'test3')
+    test_db.process_message('nikita', 'lily')
+    pprint(test_db.message_history())
