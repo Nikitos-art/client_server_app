@@ -13,7 +13,7 @@ TIME = 'time'
 USER = 'user'
 ACCOUNT_NAME = 'account_name'
 SENDER = 'sender'
-
+SERVER_DATABASE = 'sqlite:///server_base.db3'
 # Прочие ключи, используемые в протоколе
 PRESENCE = 'presence'
 RESPONSE = 'response'
